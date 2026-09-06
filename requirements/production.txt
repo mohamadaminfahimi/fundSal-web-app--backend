@@ -1,0 +1,7 @@
+# وابستگی‌های مخصوص محیط تولید (production).
+-r base.txt
+
+gunicorn==23.0.0
+uvicorn[standard]==0.34.0
+whitenoise==6.8.2
+sentry-sdk==2.19.2

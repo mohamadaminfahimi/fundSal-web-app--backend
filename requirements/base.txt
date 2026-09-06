@@ -1,0 +1,8 @@
+# وابستگی‌های اصلی که در تمام محیط‌ها (development / production) لازم هستند.
+Django==6.1.1
+djangorestframework==3.18.0
+djangorestframework-simplejwt==5.5.1
+psycopg2-binary==2.9.12
+django-environ==0.14.0
+drf-spectacular==0.30.0
+django-cors-headers==4.6.0
