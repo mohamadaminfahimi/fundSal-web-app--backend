@@ -12,6 +12,8 @@ from apps.trading.views import BuyOrderView, OrderListView, SellOrderView
 from apps.transactions.views import TransactionDetailView, TransactionListView
 from apps.users.views import LoginView, LogoutView, ProfileView, RefreshTokenView, RegisterView
 from apps.wallet.views import AssetHoldingView, WalletAdjustView, WalletView
+from apps.wallet.views import PortfolioSummaryView
+from apps.market.views import MarketPricesView
 
 urlpatterns = [
     path("health/", health_check, name="health-check"),
@@ -38,4 +40,6 @@ urlpatterns = [
         SpectacularSwaggerView.as_view(url_name="schema"),
         name="swagger-ui",
     ),
+    path("market/prices", MarketPricesView.as_view(), name="market-prices"),
+    path("portfolio/summary", PortfolioSummaryView.as_view(), name="portfolio-summary"),
 ]
