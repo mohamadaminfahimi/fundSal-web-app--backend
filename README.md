@@ -84,6 +84,7 @@ python manage.py runserver
 
 - Django Admin: <http://localhost:8000/admin/>
 - مستندات API (Swagger UI): <http://localhost:8000/api/v1/docs/>
+- راهنمای کامل فارسی API برای فرانت‌اند: [`api/README.md`](api/README.md)
 
 ### توضیح دستورات
 
