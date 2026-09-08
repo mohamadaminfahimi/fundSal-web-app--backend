@@ -24,15 +24,30 @@ class UserSerializer(serializers.ModelSerializer):
 
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True, trim_whitespace=False)
+    password = serializers.CharField(
+        write_only=True,
+        trim_whitespace=False,
+    )
 
     def validate(self, attrs):
-        email = attrs.get("email")
-        password = attrs.get("password")
+        email = attrs["email"]
+        password = attrs["password"]
 
-        user = authenticate(request=self.context.get("request"), email=email, password=password)
-        if user is None or not user.is_active:
-            raise serializers.ValidationError({"detail": "اطلاعات ورود نامعتبر است."})
+        user = authenticate(
+            request=self.context.get("request"),
+            email=email,
+            password=password,
+        )
+
+        if user is None:
+            raise serializers.ValidationError({
+                "detail": "ایمیل یا رمز عبور اشتباه است."
+            })
+
+        if not user.is_active:
+            raise serializers.ValidationError({
+                "detail": "حساب کاربری شما غیرفعال است."
+            })
 
         attrs["user"] = user
         return attrs

@@ -42,8 +42,9 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     phone_number = models.CharField(
         max_length=20,
         validators=[phone_number_validator],
-        blank=True,
-        default="",
+        null=False,
+        blank=False,
+        unique=True,
         help_text="Optional, international format (e.g. +989121234567).",
     )
 
