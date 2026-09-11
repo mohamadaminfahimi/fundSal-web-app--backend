@@ -63,6 +63,9 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.common.middleware.RequestIDMiddleware",
+    "apps.common.middleware.RequestTimingMiddleware",  # ✅ آخر
+
+
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -94,8 +97,21 @@ ASGI_APPLICATION = "config.asgi.application"
 # پشتیبانی می‌کند؛ برخلاف بعضی دیتابیس‌های دیگر که float را جایگزین می‌کنند.
 # ---------------------------------------------------------------------------
 
+# config/settings/base.py
+
 DATABASES = {
-    "default": env.db("DATABASE_URL"),
+    "default": {
+        **env.db("DATABASE_URL"),
+        "CONN_MAX_AGE": 600,  # ✅ اتصال رو ۱۰ دقیقه باز نگه دار
+        "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": {
+            "connect_timeout": 5,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        },
+    }
 }
 
 
@@ -237,4 +253,23 @@ LOGGING = {
             "propagate": False,
         },
     },
+}
+
+
+
+
+# جایگزین LocMemCache
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": env("REDIS_URL", default="redis://127.0.0.1:6379/1"),
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "SOCKET_CONNECT_TIMEOUT": 5,
+            "SOCKET_TIMEOUT": 5,
+            "IGNORE_EXCEPTIONS": True,  # اگه Redis خطا داد، کرش نکن
+        },
+        "KEY_PREFIX": "gold",
+        "TIMEOUT": 300,
+    }
 }
