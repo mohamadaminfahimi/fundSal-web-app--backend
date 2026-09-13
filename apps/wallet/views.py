@@ -6,6 +6,7 @@ import logging
 import time
 
 from django.core.cache import cache
+from django.db.models import Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -49,12 +50,35 @@ def get_wallet(user) -> Wallet:
 
 
 def get_wallet_data(wallet: Wallet) -> dict:
-    """تبدیل Wallet به دیکشنری برای پاسخ"""
+    """تبدیل Wallet به دیکشنری برای پاسخ — با محاسبه واریز/برداشت کل"""
+    from apps.invoices.models import Invoice
+
+    # ✅ محاسبه کل واریز و برداشت تاییدشده
+    total_deposit = (
+        Invoice.objects.filter(
+            user=wallet.user,
+            transaction_type="deposit",
+            status="paid",
+        ).aggregate(total=Sum("total_toman"))["total"]
+        or 0
+    )
+
+    total_withdraw = (
+        Invoice.objects.filter(
+            user=wallet.user,
+            transaction_type="withdraw",
+            status="paid",
+        ).aggregate(total=Sum("total_toman"))["total"]
+        or 0
+    )
+
     return {
         "id": wallet.id,
         "available_balance": str(wallet.available_balance),
         "pending_balance": str(wallet.pending_balance),
         "total_balance": str(wallet.total_balance),
+        "total_deposit": str(total_deposit),      # ✅ اضافه شد
+        "total_withdraw": str(total_withdraw),    # ✅ اضافه شد
         "currency": wallet.currency,
         "created_at": wallet.created_at.isoformat() if wallet.created_at else None,
         "updated_at": wallet.updated_at.isoformat() if wallet.updated_at else None,
@@ -99,7 +123,12 @@ def get_prices_data() -> list[dict]:
     return prices
 
 
-def get_portfolio_data(user, wallet: Wallet = None, assets: list = None, prices: list = None) -> dict:
+def get_portfolio_data(
+    user,
+    wallet: Wallet = None,
+    assets: list = None,
+    prices: list = None,
+) -> dict:
     """محاسبه پورتفولیو"""
     if wallet is None:
         wallet = get_wallet(user)
@@ -131,6 +160,12 @@ def get_portfolio_data(user, wallet: Wallet = None, assets: list = None, prices:
             quantize_money(total_assets_value + wallet.total_balance)
         ),
     }
+
+
+def _clear_user_wallet_caches(user_id: int):
+    """✅ پاک کردن همه کش‌های مرتبط با کیف پول کاربر"""
+    for prefix in ("wallet", "assets", "portfolio", "dashboard", "transactions"):
+        cache.delete(cache_key(prefix, user_id))
 
 
 # ============================================================
@@ -195,7 +230,13 @@ class WalletAdjustView(APIView):
 
         if action not in ("credit", "debit"):
             return Response(
-                {"success": False, "error": {"code": "INVALID_ACTION", "message": "عملیات نامعتبر است."}},
+                {
+                    "success": False,
+                    "error": {
+                        "code": "INVALID_ACTION",
+                        "message": "عملیات نامعتبر است.",
+                    },
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -206,8 +247,7 @@ class WalletAdjustView(APIView):
         )
 
         # ✅ پاک کردن همه کش‌های مرتبط
-        for prefix in ("wallet", "assets", "portfolio", "dashboard"):
-            cache.delete(cache_key(prefix, user_id))
+        _clear_user_wallet_caches(user_id)
 
         return Response({"success": True, "data": get_wallet_data(wallet)})
 
@@ -238,7 +278,7 @@ class PortfolioSummaryView(APIView):
 class DashboardView(APIView):
     """
     GET /api/v1/dashboard/
-    
+
     ✅ Endpoint ترکیبی برای صفحه اصلی - همه چیز در یک درخواست
     """
     permission_classes = [IsAuthenticated]
@@ -286,4 +326,3 @@ class DashboardView(APIView):
         duration = (time.time() - start) * 1000
         logger.info(f"💾 Dashboard from DB in {duration:.0f}ms")
         return Response({"success": True, "data": data})
-    

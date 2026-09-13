@@ -1,3 +1,4 @@
+# config/settings/base.py
 """
 تنظیمات مشترک بین تمام محیط‌ها (development / production).
 
@@ -16,12 +17,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 env = environ.Env()
 
-# فایل .env فقط در development خوانده می‌شود؛ در production مقادیر باید
-# مستقیماً توسط سیستم Orchestration (مثل Docker Compose) تزریق شوند
-# تا فایل .env به صورت تصادفی داخل ایمیج Docker یا Git کپی نشود.
+# فایل .env فقط در development خوانده می‌شود.
 ENV_FILE = BASE_DIR / ".env"
 if ENV_FILE.exists():
     environ.Env.read_env(str(ENV_FILE))
+
 
 # ---------------------------------------------------------------------------
 # Core
@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "drf_spectacular",
     "corsheaders",
+    # Local apps
     "apps.common",
     "apps.users",
     "apps.market",
@@ -48,6 +49,7 @@ INSTALLED_APPS = [
     "apps.transactions",
     "apps.invoices",
     "apps.trading",
+    "apps.admin_api",
 ]
 
 
@@ -64,8 +66,6 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.common.middleware.RequestIDMiddleware",
     "apps.common.middleware.RequestTimingMiddleware",  # ✅ آخر
-
-
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -88,21 +88,15 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
+
 # ---------------------------------------------------------------------------
 # Database
-#
-# از NUMERIC/DECIMAL برای فیلدهای مالی استفاده می‌شود، نه float.
-# این تنظیم در Migration های هر اپ (نه اینجا) اعمال می‌شود، اما موتور دیتابیس
-# باید PostgreSQL باشد چون دقت (precision) لازم برای NUMERIC را به درستی
-# پشتیبانی می‌کند؛ برخلاف بعضی دیتابیس‌های دیگر که float را جایگزین می‌کنند.
 # ---------------------------------------------------------------------------
-
-# config/settings/base.py
 
 DATABASES = {
     "default": {
         **env.db("DATABASE_URL"),
-        "CONN_MAX_AGE": 600,  # ✅ اتصال رو ۱۰ دقیقه باز نگه دار
+        "CONN_MAX_AGE": 600,
         "CONN_HEALTH_CHECKS": True,
         "OPTIONS": {
             "connect_timeout": 5,
@@ -117,9 +111,8 @@ DATABASES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# باید همیشه از همان ابتدای پروژه، پیش از اولین migrate، تنظیم شود؛ تغییر
-# آن بعد از اجرای Migration های واقعی روی دیتابیس عملاً غیرممکن است.
 AUTH_USER_MODEL = "users.User"
+
 
 # ---------------------------------------------------------------------------
 # Password validation
@@ -141,6 +134,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+
 # ---------------------------------------------------------------------------
 # Internationalization
 # ---------------------------------------------------------------------------
@@ -150,6 +144,7 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
+
 # ---------------------------------------------------------------------------
 # Static files
 # ---------------------------------------------------------------------------
@@ -157,28 +152,69 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
+
 # ---------------------------------------------------------------------------
 # CORS
-#
-# فقط origin های صراحتاً مجاز (فرانت‌اند Next.js) اجازه دسترسی دارند؛
-# هرگز از CORS_ALLOW_ALL_ORIGINS=True استفاده نمی‌شود چون در ترکیب با
-# CORS_ALLOW_CREDENTIALS=True دسترسی هر وب‌سایتی به Cookie های احراز هویت
-# کاربر را ممکن می‌کند (یک آسیب‌پذیری امنیتی جدی).
 # ---------------------------------------------------------------------------
 
-CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+CORS_ALLOWED_ORIGINS = env.list(
+    "CORS_ALLOWED_ORIGINS",
+    default=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+)
 CORS_ALLOW_CREDENTIALS = True
+
+# ✅ هدرهایی که فرانت‌اند می‌تواند بفرستد
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+]
+
+# ✅ متدهای مجاز
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+
+
+# ---------------------------------------------------------------------------
+# CSRF
+# ---------------------------------------------------------------------------
+
+CSRF_TRUSTED_ORIGINS = env.list(
+    "CSRF_TRUSTED_ORIGINS",
+    default=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+)
+CSRF_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = False  # تا فرانت‌اند بتواند بخواند (در صورت نیاز)
+CSRF_COOKIE_SECURE = False   # در production True
+
 
 # ---------------------------------------------------------------------------
 # Django REST Framework
-#
-# تنظیم پیش‌فرض Authentication روی JWT (از طریق HttpOnly Cookie) قرار می‌گیرد.
-# جزئیات کامل معماری Authentication در Phase 5 پیاده‌سازی می‌شود؛ اینجا فقط
-# اسکلت تنظیمات آماده می‌شود تا در فازهای بعدی صرفاً تکمیل شود.
 # ---------------------------------------------------------------------------
 
 REST_FRAMEWORK = {
+    # ✅ ترتیب مهم: Admin اول، چون کوکی admin_access_token را چک می‌کند
     "DEFAULT_AUTHENTICATION_CLASSES": (
+        "apps.admin_api.authentication.AdminCookieJWTAuthentication",
         "apps.users.authentication.CookieJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
@@ -200,6 +236,29 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.common.exception_handler.custom_exception_handler",
 }
 
+
+# ---------------------------------------------------------------------------
+# Simple JWT
+# ---------------------------------------------------------------------------
+
+SIMPLE_JWT = {
+    # طول عمر کوتاه Access Token ریسک سرقت توکن را کاهش می‌دهد.
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    # چرخش خودکار Refresh Token همراه با Blacklist
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    "USER_ID_FIELD": "id",
+    "USER_ID_CLAIM": "user_id",
+}
+
+
+# ---------------------------------------------------------------------------
+# drf-spectacular
+# ---------------------------------------------------------------------------
+
 SPECTACULAR_SETTINGS = {
     "TITLE": "Precious Metals Trading Platform API",
     "DESCRIPTION": "API برای خرید، فروش و مدیریت طلا و نقره.",
@@ -207,24 +266,9 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
 }
 
-SIMPLE_JWT = {
-    # طول عمر کوتاه Access Token ریسک سرقت توکن را کاهش می‌دهد؛ حتی اگر
-    # توکن لو برود، مدت اعتبار آن محدود است.
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
-    # چرخش (Rotation) خودکار Refresh Token همراه با Blacklist کردن توکن قدیمی
-    # از Replay Attack با یک Refresh Token سرقت‌شده جلوگیری می‌کند.
-    "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": True,
-    "UPDATE_LAST_LOGIN": True,
-    "AUTH_HEADER_TYPES": ("Bearer",),
-}
 
 # ---------------------------------------------------------------------------
 # Logging
-#
-# ساختار پایه‌ی Logging؛ جزئیات کامل (فرمت JSON، ارسال به سیستم مانیتورینگ)
-# در Phase 15 تکمیل می‌شود.
 # ---------------------------------------------------------------------------
 
 LOGGING = {
@@ -256,9 +300,10 @@ LOGGING = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Cache (Redis)
+# ---------------------------------------------------------------------------
 
-
-# جایگزین LocMemCache
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
@@ -267,9 +312,22 @@ CACHES = {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "SOCKET_CONNECT_TIMEOUT": 5,
             "SOCKET_TIMEOUT": 5,
-            "IGNORE_EXCEPTIONS": True,  # اگه Redis خطا داد، کرش نکن
+            "IGNORE_EXCEPTIONS": True,
         },
         "KEY_PREFIX": "gold",
         "TIMEOUT": 300,
     }
 }
+
+
+# ---------------------------------------------------------------------------
+# Cookie Names (سفارشی‌سازی‌شده برای ادمین و کاربر عادی)
+# ---------------------------------------------------------------------------
+
+# ✅ نام کوکی‌های کاربر عادی
+USER_ACCESS_COOKIE = "access_token"
+USER_REFRESH_COOKIE = "refresh_token"
+
+# ✅ نام کوکی‌های ادمین
+ADMIN_ACCESS_COOKIE = "admin_access_token"
+ADMIN_REFRESH_COOKIE = "admin_refresh_token"

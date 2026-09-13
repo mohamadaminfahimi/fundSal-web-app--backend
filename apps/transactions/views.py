@@ -14,8 +14,15 @@ class TransactionListView(APIView):
 
     def get(self, request, *args, **kwargs):
         qs = Transaction.objects.filter(user=request.user).order_by("-created_at")
+
+        # ✅ فیلتر بر اساس نوع (اختیاری از query param)
+        type_filter = request.query_params.get("type")
+        if type_filter:
+            qs = qs.filter(transaction_type=type_filter)
+
         serializer = TransactionSerializer(qs, many=True)
         return Response({"success": True, "data": serializer.data})
+
 
 
 class TransactionDetailView(APIView):
@@ -26,3 +33,4 @@ class TransactionDetailView(APIView):
         if txn is None:
             return Response({"success": False, "error": {"code": "NOT_FOUND", "message": "تراکنش یافت نشد."}}, status=status.HTTP_404_NOT_FOUND)
         return Response({"success": True, "data": TransactionSerializer(txn).data})
+

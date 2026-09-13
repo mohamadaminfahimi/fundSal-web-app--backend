@@ -16,20 +16,8 @@ User = get_user_model()
 
 
 class CookieJWTAuthentication(JWTAuthentication):
-    """
-    احراز هویت JWT از Cookie.
-    
-    بهینه‌سازی‌ها:
-    - کش کردن user به مدت ۵ دقیقه (جلوگیری از کوئری تکراری)
-    - only() برای خواندن فقط فیلدهای لازم
-    - پشتیبانی همزمان از Cookie و Header (fallback)
-    """
-
     def authenticate(self, request):
-        # ✅ تلاش اول: از Cookie
         raw_token = request.COOKIES.get("access_token")
-        
-        # ✅ اگر در Cookie نبود، از Header بگیر (fallback)
         if raw_token is None:
             header = self.get_header(request)
             if header is None:
@@ -43,30 +31,24 @@ class CookieJWTAuthentication(JWTAuthentication):
         except (InvalidToken, TokenError):
             return None
 
-        # ✅ کش user به مدت ۵ دقیقه
         user_id = validated_token.get("user_id")
         cache_key = f"auth:user:{user_id}"
         
+        # ✅ کش کاربر
         user = cache.get(cache_key)
         if user is None:
             try:
                 user = User.objects.only(
-                    "id",
-                    "email",
-                    "first_name",
-                    "last_name",
-                    "is_active",
-                    "is_staff",
-                    "is_email_verified",
+                    "id", "email", "first_name", "last_name",
+                    "is_active", "is_staff", "is_email_verified",
                 ).get(id=user_id)
                 cache.set(cache_key, user, 300)  # ۵ دقیقه
-                logger.debug(f"💾 Auth user {user_id} loaded from DB")
             except User.DoesNotExist:
                 return None
-        else:
-            logger.debug(f"⚡ Auth user {user_id} loaded from cache")
 
         return user, validated_token
+
+
 
 
 def set_auth_cookies(response, access_token: str, refresh_token: str) -> None:

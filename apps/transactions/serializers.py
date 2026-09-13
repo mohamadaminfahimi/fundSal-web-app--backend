@@ -16,8 +16,16 @@ class TransactionSerializer(serializers.ModelSerializer):
             "currency",
             "status",
             "reference_id",
-            "metadata",
+            "metadata",       # ✅
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "user", "created_at", "updated_at"]
+
+
+
+
+
+
+
+
+        

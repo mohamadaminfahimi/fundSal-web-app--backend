@@ -6,3 +6,4 @@ psycopg2-binary==2.9.12
 django-environ==0.14.0
 drf-spectacular==0.30.0
 django-cors-headers==4.6.0
+django-redis==7.0.0

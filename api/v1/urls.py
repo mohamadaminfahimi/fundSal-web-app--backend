@@ -1,9 +1,15 @@
 """Version 1 endpoint registry."""
 
+from django.conf.urls import include
 from django.urls import path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from apps.common.views import health_check
+from apps.invoices.views import (
+    CreateInvoiceView,
+    InvoiceDetailView,
+    InvoiceListView,
+)
 from apps.market.views import MarketPricesView
 from apps.trading.views import BuyOrderView, OrderListView, SellOrderView
 from apps.transactions.views import TransactionDetailView, TransactionListView
@@ -49,6 +55,17 @@ urlpatterns = [
     path("portfolio/summary/", PortfolioSummaryView.as_view(), name="portfolio-summary"),
 
     # -----------------------------------------------------------------------
+    # Invoices (فاکتورها - واریز/برداشت/خرید/فروش)
+    # -----------------------------------------------------------------------
+    path("invoices/", InvoiceListView.as_view(), name="invoice-list"),
+    path("invoices/create/", CreateInvoiceView.as_view(), name="invoice-create"),
+    path(
+        "invoices/<int:invoice_id>/",
+        InvoiceDetailView.as_view(),
+        name="invoice-detail",
+    ),
+
+    # -----------------------------------------------------------------------
     # Transactions
     # -----------------------------------------------------------------------
     path("transactions/", TransactionListView.as_view(), name="transaction-list"),
@@ -75,4 +92,9 @@ urlpatterns = [
     # -----------------------------------------------------------------------
     path("schema/", SpectacularAPIView.as_view(), name="schema"),
     path("docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
+
+        # ✅ Admin API
+    path("admin/", include("apps.admin_api.urls")),
+
+
 ]

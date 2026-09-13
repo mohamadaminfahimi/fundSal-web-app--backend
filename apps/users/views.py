@@ -1,6 +1,7 @@
 # apps/users/views.py
 
 from __future__ import annotations
+from venv import logger
 
 from django.conf import settings
 from django.contrib.auth import logout
@@ -364,52 +365,95 @@ class RefreshTokenView(APIView):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         try:
+            user = request.user
+            cache_key = f"profile:user:{user.id}"
+            
+            # ✅ از کش
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return CustomResponse.success(
+                    data=cached,
+                    message="اطلاعات پروفایل دریافت شد."
+                )
+            
+            # ✅ از DB
+            data = UserSerializer(user).data
+            cache.set(cache_key, data, 300)  # ۵ دقیقه
+            
             return CustomResponse.success(
-                data=UserSerializer(request.user).data,
-                message="اطلاعات پروفایل دریافت شد.",
+                data=data,
+                message="اطلاعات پروفایل دریافت شد."
             )
         except Exception as e:
             print(f"🔥 خطای غیرمنتظره در ProfileView GET: {str(e)}")
             return CustomResponse.error(
                 code="GEN_001",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
     def patch(self, request, *args, **kwargs):
         try:
             user = request.user
-
+            
             serializer = ProfileUpdateSerializer(
                 user,
                 data=request.data,
                 partial=True,
                 context={"request": request},
             )
-
+            
+            # ✅ اگه خطای اعتبارسنجی داشت
             if not serializer.is_valid():
+                # ✅ خطای یونیک بودن ایمیل
+                if "email" in serializer.errors:
+                    return CustomResponse.error(
+                        code="REG_002",
+                        field="email",
+                        detail="این ایمیل قبلاً ثبت شده است.",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+                
+                # سایر خطاها
                 return CustomResponse.validation_errors(serializer.errors)
-
-            updated_user = serializer.save()
+            
+            # ✅ چک کن که کاربر واقعاً چیزی تغییر داده
             changed_fields = list(serializer.validated_data.keys())
-
-            user_identifier = user.email if hasattr(user, "email") else str(user.id)
-            print(f"✅ پروفایل به‌روز شد: {user_identifier}")
-
+            if not changed_fields:
+                return CustomResponse.error(
+                    code="INP_002",
+                    detail="هیچ تغییری اعمال نشد.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+            
+            # ✅ اعمال تغییرات
+            updated_user = serializer.save()
+            
+            # ✅ چک کن ایمیل تغییر کرده یا نه
+            email_changed = "email" in changed_fields
+            
             # ✅ پاک کردن کش
             cache.delete(f"profile:user:{user.id}")
             cache.delete(f"dashboard:user:{user.id}")
-
+            cache.delete(f"auth:user:{user.id}")
+            
+            user_identifier = user.email if hasattr(user, "email") else str(user.id)
+            print(f"✅ پروفایل به‌روز شد: {user_identifier} - تغییرات: {', '.join(changed_fields)}")
+            
+            # ✅ پیام مناسب
+            message = f"پروفایل با موفقیت به‌روزرسانی شد. ({len(changed_fields)} تغییر)"
+            if email_changed:
+                message += " لطفاً ایمیل جدید خود را تایید کنید."
+            
             return CustomResponse.success(
                 data=UserSerializer(updated_user).data,
-                message=f"پروفایل با موفقیت به‌روزرسانی شد. ({len(changed_fields)} تغییر)",
+                message=message,
             )
-
+        
         except Exception as e:
             print(f"🔥 خطای غیرمنتظره در ProfileView PATCH: {str(e)}")
             return CustomResponse.error(
@@ -417,3 +461,4 @@ class ProfileView(APIView):
                 detail=str(e) if settings.DEBUG else None,
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
