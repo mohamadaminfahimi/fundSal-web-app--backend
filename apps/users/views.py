@@ -286,32 +286,22 @@ class LoginView(GenericAPIView):
             )
 
 
+from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
+
 class LogoutView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
-    def post(self, request, *args, **kwargs):
-        try:
-            user = request.user
-            user_identifier = user.email if hasattr(user, "email") else str(user.id)
-            print(f"✅ کاربر خارج شد: {user_identifier}")
+    def post(self, request):
+        response = CustomResponse.success(
+            message="خروج با موفقیت انجام شد."
+        )
 
-            # ✅ پاک کردن کش کاربر
-            for prefix in ("profile", "wallet", "assets", "portfolio", "dashboard"):
-                cache.delete(f"{prefix}:user:{user.id}")
+        clear_auth_cookies(response)
 
-            logout(request)
-            response = CustomResponse.success(message="خروج با موفقیت انجام شد.")
-            clear_auth_cookies(response)
-            return response
+        return response
 
-        except Exception as e:
-            print(f"🔥 خطای غیرمنتظره در LogoutView: {str(e)}")
-            return CustomResponse.error(
-                code="GEN_001",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-
+    
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
 
