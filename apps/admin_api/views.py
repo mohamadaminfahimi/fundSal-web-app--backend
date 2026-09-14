@@ -21,6 +21,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.invoices.models import Invoice
 from apps.market.services.price_service import price_service
 from apps.trading.models import Order
+from apps.transactions.models import Transaction
 from apps.users.views import CustomResponse
 from apps.wallet.models import AssetHolding, Wallet
 from apps.wallet.services import WalletService
@@ -47,12 +48,7 @@ User = get_user_model()
 # ============================================================
 
 def normalize_phone(phone: str) -> str:
-    """
-    تبدیل شماره موبایل ایران به فرمت بین‌المللی:
-      09121234567  → +989121234567
-      9121234567   → +989121234567
-      +989121234567 → +989121234567
-    """
+    """تبدیل شماره موبایل ایران به فرمت بین‌المللی."""
     if not phone:
         return phone
     digits = "".join(c for c in phone if c.isdigit())
@@ -64,9 +60,7 @@ def normalize_phone(phone: str) -> str:
 
 
 def _extract_validation_errors(exc) -> dict[str, list[str]]:
-    """
-    از یک ValidationError جنگو، دیکشنری {field: [messages]} بیرون بکش.
-    """
+    """از یک ValidationError جنگو، دیکشنری {field: [messages]} بیرون بکش."""
     errors: dict[str, list[str]] = {}
     message_dict = getattr(exc, "message_dict", None)
     if message_dict:
@@ -350,26 +344,15 @@ class AdminInvoiceDetailView(APIView):
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
 
-            # ============================================================
-            # گرفتن ورودی‌ها
-            # ============================================================
             new_status = request.data.get("status")
             admin_note = request.data.get("admin_note", None)
-            mode = request.data.get("mode", "normal")  # ✅ "normal" یا "manual"
-            # mode="manual" یعنی ادمین می‌خواهد فقط وضعیت را دستی عوض کند
-            # و هیچ تاثیری روی کیف پول نداشته باشد
+            mode = request.data.get("mode", "normal")
 
             old_status = invoice.status
 
-            # ============================================================
-            # اگر توضیحات ارسال شده بود، ذخیره کن
-            # ============================================================
             if admin_note is not None:
                 invoice.admin_note = admin_note
 
-            # ============================================================
-            # اگر وضعیت تغییر نکرده
-            # ============================================================
             if not new_status or new_status == old_status:
                 invoice.save()
                 return CustomResponse.success(
@@ -377,37 +360,28 @@ class AdminInvoiceDetailView(APIView):
                     message="توضیحات به‌روزرسانی شد.",
                 )
 
-            # ============================================================
-            # ✅ اگر mode="manual" → فقط وضعیت عوض شود، بدون دست زدن به کیف پول
-            # ============================================================
+            # ✅ حالت دستی — بدون اثر روی کیف پول
             if mode == "manual":
                 invoice.status = new_status
                 invoice.reviewed_by = request.user
                 invoice.reviewed_at = timezone.now()
                 invoice.save()
 
-                for key in (
-                    f"invoices:user:{invoice.user.id}",
-                    f"wallet:user:{invoice.user.id}",
-                    f"dashboard:user:{invoice.user.id}",
-                    "admin:dashboard:stats",
-                ):
-                    cache.delete(key)
+                clear_user_caches(invoice.user.id)
+                cache.delete("admin:dashboard:stats")
 
                 return CustomResponse.success(
                     data=AdminInvoiceSerializer(invoice).data,
-                    message=f"وضعیت فاکتور به‌صورت دستی به «{new_status}» تغییر یافت (بدون اثر روی کیف پول).",
+                    message=f"وضعیت فاکتور به‌صورت دستی به «{new_status}» تغییر یافت.",
                 )
 
             # ============================================================
-            # حالت عادی: منطق تجاری
+            # تایید فاکتور
             # ============================================================
-
-            # ✅ تایید فاکتور
             if new_status == "paid" and old_status != "paid":
                 invoice.mark_as_paid(reviewed_by=request.user, admin_note=admin_note or "")
 
-                # واریز (deposit) → اضافه کردن به کیف پول
+                # واریز → اضافه به کیف پول
                 if invoice.transaction_type == "deposit":
                     WalletService.credit(
                         invoice.user,
@@ -415,58 +389,32 @@ class AdminInvoiceDetailView(APIView):
                         reason=f"تایید فاکتور واریز {invoice.number}",
                     )
 
-                # ✅ برداشت (withdraw) → فقط پول از کیف پول کاربر کم شود
-                elif invoice.transaction_type == "withdraw":
-                    try:
-                        w = Wallet.objects.select_for_update().get(user=invoice.user)
+                # ✅ برداشت (withdraw) — چون در CreateInvoiceView از available کم شده،
+                # اینجا کاری نکن
 
-                        # اگر پول در pending_balance است، از آن کم کن
-                        # (چون هنگام درخواست برداشت، معمولاً از available به pending منتقل می‌شود)
-                        if w.pending_balance >= invoice.total_toman:
-                            w.pending_balance -= invoice.total_toman
-                        else:
-                            # اگر pending کافی نبود، از available کم کن
-                            w.available_balance -= invoice.total_toman
-
-                        w.save()
-                    except Wallet.DoesNotExist:
-                        pass
-
-            # ✅ رد فاکتور
+            # ============================================================
+            # رد فاکتور
+            # ============================================================
             elif new_status == "failed" and old_status != "failed":
                 invoice.mark_as_failed(reviewed_by=request.user, admin_note=admin_note or "")
 
-                # ✅ برداشت (withdraw) رد شد → پول را به کاربر برگردان
+                # ✅ برداشت رد شد → پول را به available برگردان
                 if invoice.transaction_type == "withdraw":
                     try:
                         w = Wallet.objects.select_for_update().get(user=invoice.user)
-
-                        # اگر در pending بود، از pending کم کن و به available برگردان
-                        if w.pending_balance >= invoice.total_toman:
-                            w.pending_balance -= invoice.total_toman
-                            w.available_balance += invoice.total_toman
-                        else:
-                            # اگر در pending نبود، فقط به available اضافه کن
-                            w.available_balance += invoice.total_toman
+                        w.available_balance += invoice.total_toman
                         w.save()
                     except Wallet.DoesNotExist:
                         pass
 
             else:
-                # سایر حالت‌ها
                 invoice.status = new_status
                 invoice.reviewed_by = request.user
                 invoice.reviewed_at = timezone.now()
                 invoice.save()
 
-            # ✅ پاک کردن کش
-            for key in (
-                f"invoices:user:{invoice.user.id}",
-                f"wallet:user:{invoice.user.id}",
-                f"dashboard:user:{invoice.user.id}",
-                "admin:dashboard:stats",
-            ):
-                cache.delete(key)
+            clear_user_caches(invoice.user.id)
+            cache.delete("admin:dashboard:stats")
 
             return CustomResponse.success(
                 data=AdminInvoiceSerializer(invoice).data,
@@ -530,13 +478,27 @@ class AdminOrderListView(APIView):
 
 
 class AdminOrderDetailView(APIView):
-    """PATCH /api/v1/admin/orders/{id}/"""
+    """GET/PATCH /api/v1/admin/orders/{id}/"""
     permission_classes = [IsAdminUser]
 
+    def get(self, request, order_id):
+        try:
+            order = Order.objects.select_related("user").get(id=order_id)
+            return CustomResponse.success(data=AdminOrderSerializer(order).data)
+        except Order.DoesNotExist:
+            return CustomResponse.error(
+                code="GEN_002", detail="سفارش یافت نشد.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception as e:
+            logger.exception(f"❌ AdminOrderDetailView GET error: {e}")
+            return CustomResponse.error(code="GEN_001", status_code=500)
+
+    @transaction.atomic
     def patch(self, request, order_id):
         try:
             try:
-                order = Order.objects.get(id=order_id)
+                order = Order.objects.select_for_update().get(id=order_id)
             except Order.DoesNotExist:
                 return CustomResponse.error(
                     code="GEN_002",
@@ -557,7 +519,6 @@ class AdminOrderDetailView(APIView):
             old_status = order.status
 
             if new_status == old_status:
-                # فقط توضیحات را ذخیره کن
                 order.metadata = {
                     **(order.metadata or {}),
                     "admin_note": admin_note,
@@ -569,19 +530,18 @@ class AdminOrderDetailView(APIView):
                 )
 
             # ============================================================
-            # تکمیل سفارش فروش — پول به کاربر
+            # تکمیل سفارش فروش → پول به available کاربر
             # ============================================================
             if new_status == "filled" and order.side == "sell" and old_status != "filled":
                 try:
                     wallet = Wallet.objects.select_for_update().get(user=order.user)
-                    wallet.pending_balance -= order.total_amount
                     wallet.available_balance += order.total_amount
                     wallet.save()
                 except Wallet.DoesNotExist:
                     pass
 
             # ============================================================
-            # تکمیل سفارش خرید — دارایی به کاربر
+            # تکمیل سفارش خرید → دارایی به کاربر
             # ============================================================
             if new_status == "filled" and order.side == "buy" and old_status != "filled":
                 try:
@@ -595,7 +555,7 @@ class AdminOrderDetailView(APIView):
                     pass
 
             # ============================================================
-            # لغو/رد سفارش خرید — برگرداندن پول به کاربر
+            # لغو/رد سفارش خرید → برگرداندن پول به available
             # ============================================================
             if new_status in ("cancelled", "rejected") and order.side == "buy" and old_status not in ("cancelled", "rejected"):
                 try:
@@ -606,7 +566,7 @@ class AdminOrderDetailView(APIView):
                     pass
 
             # ============================================================
-            # لغو/رد سفارش فروش — برگرداندن دارایی به کاربر
+            # لغو/رد سفارش فروش → برگرداندن دارایی
             # ============================================================
             if new_status in ("cancelled", "rejected") and order.side == "sell" and old_status not in ("cancelled", "rejected"):
                 try:
@@ -616,15 +576,11 @@ class AdminOrderDetailView(APIView):
                     )
                     holding.available_quantity += order.quantity
                     holding.save()
-
-                    wallet = Wallet.objects.select_for_update().get(user=order.user)
-                    wallet.pending_balance -= order.total_amount
-                    wallet.save()
                 except Exception:
                     pass
 
             # ============================================================
-            # ذخیره وضعیت + توضیحات
+            # ذخیره Order
             # ============================================================
             order.status = new_status
             order.metadata = {
@@ -635,7 +591,37 @@ class AdminOrderDetailView(APIView):
             }
             order.save()
 
-            # ✅ پاک کردن کش
+            # ============================================================
+            # ✅ آپدیت Transaction متناظر
+            # ============================================================
+            try:
+                txn = Transaction.objects.get(
+                    reference_id=f"{order.side}-order-{order.id}"
+                )
+
+                if new_status == "filled":
+                    txn.status = "completed"
+                elif new_status in ("rejected", "cancelled"):
+                    txn.status = "failed"
+                else:
+                    txn.status = "pending"
+
+                txn.metadata = {
+                    **(txn.metadata or {}),
+                    "admin_note": admin_note,
+                    "reviewed_at": timezone.now().isoformat(),
+                }
+                txn.save()
+                logger.info(
+                    f"✅ Transaction {txn.id} synced with Order {order.id}: "
+                    f"{txn.status}"
+                )
+            except Transaction.DoesNotExist:
+                logger.warning(
+                    f"⚠️ Transaction for order {order.id} not found. "
+                    f"Looking for reference_id='{order.side}-order-{order.id}'"
+                )
+
             clear_user_caches(order.user.id)
             cache.delete("admin:dashboard:stats")
 
@@ -747,7 +733,6 @@ class AdminUserCreateView(APIView):
 
             errors: dict[str, list[str]] = {}
 
-            # ایمیل
             if not email:
                 errors.setdefault("email", []).append("ایمیل الزامی است.")
             elif "@" not in email:
@@ -755,7 +740,6 @@ class AdminUserCreateView(APIView):
             elif User.objects.filter(email__iexact=email).exists():
                 errors.setdefault("email", []).append("این ایمیل قبلاً ثبت شده است.")
 
-            # رمز
             if not password:
                 errors.setdefault("password", []).append("رمز عبور الزامی است.")
             elif len(password) < 6:
@@ -763,13 +747,11 @@ class AdminUserCreateView(APIView):
                     "رمز عبور باید حداقل ۶ کاراکتر باشد."
                 )
 
-            # نام
             if not first_name:
                 errors.setdefault("first_name", []).append("نام الزامی است.")
             if not last_name:
                 errors.setdefault("last_name", []).append("نام خانوادگی الزامی است.")
 
-            # موبایل
             normalized_phone = None
             if not raw_phone:
                 errors.setdefault("phone_number", []).append("شماره موبایل الزامی است.")
@@ -798,7 +780,6 @@ class AdminUserCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # ✅ ساخت کاربر
             try:
                 user = User.objects.create_user(
                     email=email,
@@ -813,7 +794,6 @@ class AdminUserCreateView(APIView):
                 import traceback
                 print("🔥 create_user ERROR:", traceback.format_exc())
 
-                # اگر ValidationError جنگو بود
                 from django.core.exceptions import ValidationError as DjangoValidationError
                 if isinstance(e, DjangoValidationError):
                     errs = _extract_validation_errors(e)
@@ -835,7 +815,6 @@ class AdminUserCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # ✅ کیف پول
             try:
                 Wallet.objects.get_or_create(user=user)
             except Exception:
@@ -871,7 +850,6 @@ class AdminUserUpdateView(APIView):
             data = request.data
             errors: dict[str, list[str]] = {}
 
-            # ایمیل
             if "email" in data:
                 new_email = (data["email"] or "").strip().lower()
                 if not new_email:
@@ -885,7 +863,6 @@ class AdminUserUpdateView(APIView):
                 ):
                     errors.setdefault("email", []).append("این ایمیل قبلاً ثبت شده است.")
 
-            # موبایل
             new_phone_raw = None
             normalized_phone = None
             if "phone_number" in data:
@@ -906,7 +883,6 @@ class AdminUserUpdateView(APIView):
                                 "این شماره موبایل قبلاً ثبت شده است."
                             )
 
-            # رمز
             if data.get("password") and len(data["password"]) < 6:
                 errors.setdefault("password", []).append(
                     "رمز عبور باید حداقل ۶ کاراکتر باشد."
@@ -922,7 +898,6 @@ class AdminUserUpdateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # ✅ اعمال تغییرات
             if "email" in data:
                 user.email = (data["email"] or "").strip().lower()
             if "first_name" in data:
@@ -966,7 +941,7 @@ class AdminUserUpdateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            cache.delete(f"dashboard:user:{user.id}")
+            clear_user_caches(user.id)
 
             return CustomResponse.success(
                 data=AdminUserListSerializer(user).data,
@@ -986,18 +961,14 @@ class AdminUserTransactionsView(APIView):
 
     def get(self, request, user_id):
         try:
-            from apps.transactions.models import Transaction
             qs = Transaction.objects.filter(user_id=user_id).order_by("-created_at")[:50]
             data = [
                 {
                     "id": t.id,
-                    "type": getattr(t, "transaction_type", None)
-                    or getattr(t, "type", None),
-                    "amount": str(getattr(t, "amount", "0")),
-                    "description": getattr(t, "description", ""),
-                    "created_at": t.created_at.isoformat()
-                    if hasattr(t, "created_at")
-                    else None,
+                    "type": t.transaction_type,
+                    "amount": str(t.amount),
+                    "description": (t.metadata or {}).get("description", ""),
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
                 }
                 for t in qs
             ]
@@ -1011,10 +982,9 @@ class AdminWalletAdjustView(APIView):
     """POST /api/v1/admin/users/{id}/wallet/adjust/"""
     permission_classes = [IsAdminUser]
 
+    @transaction.atomic
     def post(self, request, user_id):
         try:
-            from apps.transactions.models import Transaction
-
             try:
                 user = User.objects.get(id=user_id)
             except User.DoesNotExist:
@@ -1043,14 +1013,13 @@ class AdminWalletAdjustView(APIView):
                 wallet = WalletService.debit(user, amount, reason=description)
                 txn_type = "withdrawal"
 
-            # ✅ ثبت تراکنش با توضیحات
             txn = Transaction.objects.create(
                 user=user,
                 transaction_type=txn_type,
                 amount=amount,
                 currency="IRR",
                 status="completed",
-                reference_id=f"admin-adjust-{request.user.id}-{user.id}",
+                reference_id=f"admin-adjust-{request.user.id}-{user.id}-{timezone.now().timestamp()}",
                 metadata={
                     "description": description,
                     "by_admin": request.user.email,
@@ -1059,17 +1028,8 @@ class AdminWalletAdjustView(APIView):
                 },
             )
 
-            # ✅ پاک کردن کش
-            for key in (
-                f"wallet:user:{user.id}",
-                f"assets:user:{user.id}",
-                f"portfolio:user:{user.id}",
-                f"dashboard:user:{user.id}",
-                f"transactions:user:{user.id}",
-                "admin:dashboard:stats",
-            ):
-                cache.delete(key)
-
+            clear_user_caches(user.id)
+            cache.delete("admin:dashboard:stats")
 
             return CustomResponse.success(
                 data={
@@ -1082,12 +1042,13 @@ class AdminWalletAdjustView(APIView):
         except Exception as e:
             logger.exception(f"❌ AdminWalletAdjustView error: {e}")
             return CustomResponse.error(code="GEN_001", status_code=500)
-        
+
 
 class AdminAssetAdjustView(APIView):
     """POST /api/v1/admin/users/{id}/assets/adjust/"""
     permission_classes = [IsAdminUser]
 
+    @transaction.atomic
     def post(self, request, user_id):
         try:
             try:
@@ -1106,8 +1067,13 @@ class AdminAssetAdjustView(APIView):
             action = serializer.validated_data["action"]
             metal_code = serializer.validated_data["metal_code"]
             quantity = serializer.validated_data["quantity"]
+            description = (
+                serializer.validated_data.get("description")
+                or serializer.validated_data.get("reason")
+                or f"تنظیم {metal_code} توسط ادمین"
+            )
 
-            holding, _ = AssetHolding.objects.get_or_create(
+            holding, _ = AssetHolding.objects.select_for_update().get_or_create(
                 user=user, metal_code=metal_code,
                 defaults={"available_quantity": Decimal("0")},
             )
@@ -1125,15 +1091,31 @@ class AdminAssetAdjustView(APIView):
 
             holding.save()
 
-            for key in (
-                f"assets:user:{user.id}",
-                f"dashboard:user:{user.id}",
-                "admin:dashboard:stats",
-            ):
-                cache.delete(key)
+            txn = Transaction.objects.create(
+                user=user,
+                transaction_type="adjustment",
+                amount=Decimal("0"),
+                currency=metal_code,
+                status="completed",
+                reference_id=f"admin-asset-{request.user.id}-{user.id}-{timezone.now().timestamp()}",
+                metadata={
+                    "description": description,
+                    "metal_code": metal_code,
+                    "quantity": str(quantity),
+                    "action": action,
+                    "by_admin": request.user.email,
+                    "source": "admin_panel",
+                },
+            )
+
+            clear_user_caches(user.id)
+            cache.delete("admin:dashboard:stats")
 
             return CustomResponse.success(
-                data={"quantity": str(holding.available_quantity)},
+                data={
+                    "quantity": str(holding.available_quantity),
+                    "transaction_id": txn.id,
+                },
                 message=f"{metal_code} با موفقیت {'اضافه' if action == 'credit' else 'کم'} شد.",
             )
 
@@ -1219,16 +1201,17 @@ class AdminPricesView(APIView):
             return CustomResponse.error(code="GEN_001", status_code=500)
 
 
-
+# ============================================================
+# Transactions Delete
+# ============================================================
 
 class AdminTransactionDeleteView(APIView):
     """DELETE /api/v1/admin/transactions/{id}/"""
     permission_classes = [IsAdminUser]
 
+    @transaction.atomic
     def delete(self, request, transaction_id):
         try:
-            from apps.transactions.models import Transaction
-
             try:
                 txn = Transaction.objects.get(id=transaction_id)
             except Transaction.DoesNotExist:
@@ -1238,23 +1221,21 @@ class AdminTransactionDeleteView(APIView):
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
 
+            user_id = txn.user_id
+            meta = txn.metadata or {}
+            action = meta.get("action")
+
             # ✅ برگرداندن اثر تراکنش روی کیف پول
-            from apps.wallet.models import Wallet
             try:
-                wallet = Wallet.objects.get(user=txn.user)
-                meta = txn.metadata or {}
-                action = meta.get("action")
+                wallet = Wallet.objects.select_for_update().get(user=txn.user)
 
                 if txn.transaction_type == "deposit":
-                    # شارژ توسط ادمین → کم کن
                     wallet.available_balance -= txn.amount
                     wallet.save()
                 elif txn.transaction_type == "withdrawal":
-                    # برداشت توسط ادمین → برگردان
                     wallet.available_balance += txn.amount
                     wallet.save()
                 elif txn.transaction_type == "adjustment":
-                    # تنظیم فلز → برگردان
                     metal = meta.get("metal_code")
                     qty = Decimal(meta.get("quantity", "0"))
                     if metal and action:
@@ -1270,18 +1251,10 @@ class AdminTransactionDeleteView(APIView):
             except Wallet.DoesNotExist:
                 pass
 
-            user_id = txn.user_id
             txn.delete()
 
-            # ✅ پاک کردن کش
-            for key in (
-                f"wallet:user:{user_id}",
-                f"assets:user:{user_id}",
-                f"dashboard:user:{user_id}",
-                f"transactions:user:{user_id}",
-                "admin:dashboard:stats",
-            ):
-                cache.delete(key)
+            clear_user_caches(user_id)
+            cache.delete("admin:dashboard:stats")
 
             return CustomResponse.success(
                 message="تراکنش با موفقیت حذف و اثر آن برگردانده شد.",
@@ -1290,7 +1263,3 @@ class AdminTransactionDeleteView(APIView):
         except Exception as e:
             logger.exception(f"❌ AdminTransactionDeleteView error: {e}")
             return CustomResponse.error(code="GEN_001", status_code=500)
-
-
-                
-            

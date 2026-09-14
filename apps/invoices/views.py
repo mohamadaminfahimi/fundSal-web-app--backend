@@ -5,17 +5,24 @@ from __future__ import annotations
 import logging
 
 from django.core.cache import cache
+from django.db import transaction
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.signals import clear_user_caches
 from apps.users.views import CustomResponse
+from apps.wallet.models import Wallet
+
 from .models import Invoice
 from .serializers import CreateInvoiceSerializer, InvoiceSerializer
 
 logger = logging.getLogger(__name__)
 
+
+# ============================================================
+# List Invoices
+# ============================================================
 
 class InvoiceListView(APIView):
     """GET /api/v1/invoices/ - لیست فاکتورهای کاربر"""
@@ -23,22 +30,9 @@ class InvoiceListView(APIView):
 
     def get(self, request):
         try:
-            user = request.user
-            cache_key = f"invoices:user:{user.id}"
-            
-            # ✅ از کش
-            cached = cache.get(cache_key)
-            if cached is not None:
-                return CustomResponse.success(data=cached)
-            
-            # ✅ از DB
-            invoices = Invoice.objects.filter(user=user).prefetch_related("items")
-            data = InvoiceSerializer(invoices, many=True).data
-            
-            cache.set(cache_key, data, 60)  # ۱ دقیقه
-            
-            return CustomResponse.success(data=data)
-        
+            qs = Invoice.objects.filter(user=request.user).order_by("-created_at")
+            serializer = InvoiceSerializer(qs, many=True)
+            return CustomResponse.success(data=serializer.data)
         except Exception as e:
             logger.exception(f"❌ Error in InvoiceListView: {e}")
             return CustomResponse.error(
@@ -47,51 +41,72 @@ class InvoiceListView(APIView):
             )
 
 
+# ============================================================
+# Create Invoice
+# ============================================================
+
 class CreateInvoiceView(APIView):
-    """
-    POST /api/v1/invoices/create/
-    
-    ساخت درخواست واریز یا برداشت
-    
-    Request:
-    {
-        "transaction_type": "deposit" | "withdraw",
-        "amount": "1000000",
-        "description": "توضیحات (اختیاری)",
-        // برای برداشت:
-        "shaba_number": "IR...",
-        "account_name": "علی رضایی",
-        "bank_name": "بانک ملت"
-    }
-    """
+    """POST /api/v1/invoices/create/ - ساخت فاکتور واریز/برداشت"""
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request):
         try:
             serializer = CreateInvoiceSerializer(
                 data=request.data,
                 context={"request": request},
             )
-            
+
             if not serializer.is_valid():
                 return CustomResponse.validation_errors(serializer.errors)
-            
+
+            data = serializer.validated_data
+            transaction_type = data["transaction_type"]
+            amount = data["amount"]
+
+            # ============================================================
+            # ✅ اگر برداشت است، همزمان از available کم کن
+            # ============================================================
+            if transaction_type == "withdraw":
+                try:
+                    wallet = Wallet.objects.select_for_update().get(user=request.user)
+                except Wallet.DoesNotExist:
+                    wallet = Wallet.objects.create(user=request.user)
+
+                if wallet.available_balance < amount:
+                    return CustomResponse.error(
+                        code="INP_002",
+                        detail=f"موجودی کافی نیست. موجودی شما: {wallet.available_balance:,.0f} تومان",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # ✅ فقط از available کم کن
+                wallet.available_balance -= amount
+                wallet.save()
+
+                logger.info(
+                    f"✅ Withdraw request: {amount} from user {request.user.id}. "
+                    f"new available: {wallet.available_balance}"
+                )
+
+            # ============================================================
+            # ساخت فاکتور
+            # ============================================================
             invoice = serializer.save()
-            
-            # ✅ پاک کردن کش فاکتورها
-            cache.delete(f"invoices:user:{request.user.id}")
-            
+
+            # ✅ پاک کردن کامل کش‌های کاربر
+            clear_user_caches(request.user.id)
+
             logger.info(
-                f"✅ Invoice created: {invoice.number} "
-                f"({invoice.transaction_type}) by {request.user.email}"
+                f"✅ Invoice created: {invoice.number} - {transaction_type} - {amount}"
             )
-            
+
             return CustomResponse.success(
                 data=InvoiceSerializer(invoice).data,
-                message=f"درخواست {invoice.get_transaction_type_display()} با موفقیت ثبت شد.",
+                message="درخواست با موفقیت ثبت شد.",
                 status_code=status.HTTP_201_CREATED,
             )
-        
+
         except Exception as e:
             logger.exception(f"❌ Error in CreateInvoiceView: {e}")
             return CustomResponse.error(
@@ -100,28 +115,29 @@ class CreateInvoiceView(APIView):
             )
 
 
+# ============================================================
+# Invoice Detail
+# ============================================================
+
 class InvoiceDetailView(APIView):
-    """GET /api/v1/invoices/{id}/ - جزئیات فاکتور"""
+    """GET /api/v1/invoices/{id}/ - جزئیات یک فاکتور"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, invoice_id):
         try:
-            try:
-                invoice = Invoice.objects.prefetch_related("items").get(
-                    id=invoice_id,
-                    user=request.user,
-                )
-            except Invoice.DoesNotExist:
+            invoice = Invoice.objects.filter(
+                user=request.user, id=invoice_id
+            ).first()
+
+            if invoice is None:
                 return CustomResponse.error(
                     code="GEN_002",
                     detail="فاکتور یافت نشد.",
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
-            
-            return CustomResponse.success(
-                data=InvoiceSerializer(invoice).data,
-            )
-        
+
+            return CustomResponse.success(data=InvoiceSerializer(invoice).data)
+
         except Exception as e:
             logger.exception(f"❌ Error in InvoiceDetailView: {e}")
             return CustomResponse.error(

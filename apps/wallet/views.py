@@ -50,10 +50,11 @@ def get_wallet(user) -> Wallet:
 
 
 def get_wallet_data(wallet: Wallet) -> dict:
-    """تبدیل Wallet به دیکشنری برای پاسخ — با محاسبه واریز/برداشت کل"""
+    """تبدیل Wallet به دیکشنری برای پاسخ."""
     from apps.invoices.models import Invoice
+    from django.db.models import Sum, Q
 
-    # ✅ محاسبه کل واریز و برداشت تاییدشده
+    # ✅ کل واریزهای موفق
     total_deposit = (
         Invoice.objects.filter(
             user=wallet.user,
@@ -63,11 +64,12 @@ def get_wallet_data(wallet: Wallet) -> dict:
         or 0
     )
 
+    # ✅ کل برداشت‌ها — هم paid هم pending
     total_withdraw = (
         Invoice.objects.filter(
             user=wallet.user,
             transaction_type="withdraw",
-            status="paid",
+            status__in=["paid", "pending"],   # ← این خط
         ).aggregate(total=Sum("total_toman"))["total"]
         or 0
     )
@@ -77,12 +79,13 @@ def get_wallet_data(wallet: Wallet) -> dict:
         "available_balance": str(wallet.available_balance),
         "pending_balance": str(wallet.pending_balance),
         "total_balance": str(wallet.total_balance),
-        "total_deposit": str(total_deposit),      # ✅ اضافه شد
-        "total_withdraw": str(total_withdraw),    # ✅ اضافه شد
+        "total_deposit": str(total_deposit),
+        "total_withdraw": str(total_withdraw),
         "currency": wallet.currency,
         "created_at": wallet.created_at.isoformat() if wallet.created_at else None,
         "updated_at": wallet.updated_at.isoformat() if wallet.updated_at else None,
     }
+
 
 
 def get_assets_data(user) -> list[dict]:
