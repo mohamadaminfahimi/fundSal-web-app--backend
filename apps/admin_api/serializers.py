@@ -26,43 +26,57 @@ class AdminLoginSerializer(serializers.Serializer):
 # ============================================================
 # User
 # ============================================================
+# apps/admin_api/serializers.py
 
 class AdminUserListSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     wallet_balance = serializers.SerializerMethodField()
     gold_balance = serializers.SerializerMethodField()
     silver_balance = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = User
         fields = [
-            "id", "email", "first_name", "last_name", "full_name",
-            "phone_number", "is_active", "is_staff", "is_email_verified",
-            "date_joined", "wallet_balance", "gold_balance", "silver_balance","is_staff",
+            "id",
+            "email",
+            "name",
+            "full_name",
+            "phone_number",
+            "is_active",
+            "is_staff",
+            "is_email_verified",
+            "date_joined",
+            "wallet_balance",
+            "gold_balance",
+            "silver_balance",
         ]
-    
-    def get_full_name(self, obj) -> str:
-        return f"{obj.first_name} {obj.last_name}".strip() or obj.email
-    
-    def get_wallet_balance(self, obj) -> float:
+
+    def get_full_name(self, obj):
+        return obj.name or obj.email or ""
+
+    def get_wallet_balance(self, obj):
         try:
-            return float(obj.wallet.available_balance)
+            return str(obj.wallet.available_balance)
         except Exception:
-            return 0.0
-    
-    def get_gold_balance(self, obj) -> float:
+            return "0"
+
+    def get_gold_balance(self, obj):
+        from apps.wallet.models import AssetHolding
         try:
-            h = obj.asset_holdings.get(metal_code="GOLD")
-            return float(h.available_quantity)
-        except Exception:
-            return 0.0
-    
-    def get_silver_balance(self, obj) -> float:
+            h = AssetHolding.objects.get(user=obj, metal_code="GOLD")
+            return str(h.available_quantity)
+        except AssetHolding.DoesNotExist:
+            return "0"
+
+    def get_silver_balance(self, obj):
+        from apps.wallet.models import AssetHolding
         try:
-            h = obj.asset_holdings.get(metal_code="SILVER")
-            return float(h.available_quantity)
-        except Exception:
-            return 0.0
+            h = AssetHolding.objects.get(user=obj, metal_code="SILVER")
+            return str(h.available_quantity)
+        except AssetHolding.DoesNotExist:
+            return "0"
+
+
 
 class AdminWalletAdjustSerializer(serializers.Serializer):
     action = serializers.ChoiceField(choices=["credit", "debit"])

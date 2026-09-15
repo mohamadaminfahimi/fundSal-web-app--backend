@@ -1,5 +1,3 @@
-# apps/admin_api/authentication.py
-
 from __future__ import annotations
 
 import logging
@@ -21,10 +19,10 @@ class AdminCookieJWTAuthentication(JWTAuthentication):
     """
 
     def authenticate(self, request):
-        # ✅ 1) اول از کوکی ادمین
+        # 1) اول از کوکی ادمین
         raw_token = request.COOKIES.get(settings.ADMIN_ACCESS_COOKIE)
 
-        # ✅ 2) اگر نبود، از هدر Authorization
+        # 2) اگر نبود، از هدر Authorization
         if raw_token is None:
             header = self.get_header(request)
             if header is not None:
@@ -33,7 +31,7 @@ class AdminCookieJWTAuthentication(JWTAuthentication):
         if raw_token is None:
             return None
 
-        # ✅ 3) اعتبارسنجی
+        # 3) اعتبارسنجی
         try:
             validated_token = self.get_validated_token(raw_token)
         except (InvalidToken, TokenError):
@@ -43,24 +41,26 @@ class AdminCookieJWTAuthentication(JWTAuthentication):
         if not user_id:
             return None
 
-        # ✅ 4) کش
+        # 4) کش
         cache_key = f"admin:user:{user_id}"
         user = cache.get(cache_key)
+
         if user is None:
             try:
                 user = User.objects.only(
                     "id",
                     "email",
-                    "first_name",
-                    "last_name",
+                    "name",
                     "is_active",
                     "is_staff",
                 ).get(id=user_id)
+                
                 cache.set(cache_key, user, 300)
+
             except User.DoesNotExist:
                 return None
 
-        # ✅ 5) چک is_staff و is_active
+        # 5) چک is_staff و is_active
         if not user.is_staff or not user.is_active:
             return None
 

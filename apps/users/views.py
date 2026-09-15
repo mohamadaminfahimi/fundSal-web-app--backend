@@ -1,15 +1,17 @@
 # apps/users/views.py
 
 from __future__ import annotations
-from venv import logger
+
+import logging
 
 from django.conf import settings
-from django.contrib.auth import logout
+from django.contrib.auth import get_user_model, logout
 from django.core.cache import cache
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.generics import GenericAPIView
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -23,6 +25,13 @@ from .serializers import (
     UserSerializer,
 )
 
+logger = logging.getLogger(__name__)
+User = get_user_model()
+
+
+# ============================================================
+# Error & Response Helpers
+# ============================================================
 
 class ErrorDetail:
     """کلاس مدیریت خطاها با راهنمای فارسی"""
@@ -32,6 +41,7 @@ class ErrorDetail:
         "AUTH_002": "حساب کاربری شما غیرفعال شده است. با پشتیبانی تماس بگیرید.",
         "AUTH_003": "برای دسترسی به این بخش باید وارد شوید.",
         "AUTH_004": "نشست شما منقضی شده است. دوباره وارد شوید.",
+        "AUTH_005": "این شماره موبایل در سیستم ثبت نشده است. برای ثبت‌نام با پشتیبانی تماس بگیرید.",
         "TOKEN_001": "توکن دسترسی معتبر نیست یا منقضی شده است.",
         "TOKEN_002": "توکن بازیابی نامعتبر است. دوباره تلاش کنید.",
         "TOKEN_003": "توکن بازیابی یافت نشد. لطفاً وارد شوید.",
@@ -201,7 +211,7 @@ class CustomResponse:
 
 class RegisterView(GenericAPIView):
     serializer_class = RegisterSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAdminUser]
 
     def post(self, request, *args, **kwargs):
         try:
@@ -225,6 +235,75 @@ class RegisterView(GenericAPIView):
             return CustomResponse.error(
                 code="GEN_001",
                 detail=str(e) if settings.DEBUG else None,
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class CheckPhoneView(APIView):
+    """POST /api/v1/auth/check-phone/ - بررسی وجود شماره موبایل"""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        try:
+            phone_number = (request.data.get("phone_number") or "").strip()
+
+            if not phone_number:
+                return CustomResponse.error(
+                    code="INP_001",
+                    detail="شماره موبایل الزامی است.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # ✅ نرمال‌سازی شماره
+            digits = "".join(c for c in phone_number if c.isdigit())
+
+            if digits.startswith("0"):
+                digits = digits[1:]
+
+            if digits.startswith("98") and len(digits) > 10:
+                digits = digits[2:]
+
+            if len(digits) != 10:
+                return CustomResponse.error(
+                    code="REG_008",
+                    detail="شماره موبایل معتبر نیست. مثال: 9123456789",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            intl_phone = "+98" + digits
+            local_phone = "0" + digits
+
+            # ✅ جستجو با هر دو فرمت
+            user = User.objects.filter(
+                Q(phone_number=intl_phone) | Q(phone_number=local_phone)
+            ).first()
+
+            if not user:
+                return CustomResponse.error(
+                    code="AUTH_005",
+                    detail="این شماره موبایل در سیستم ثبت نشده است. برای ثبت‌نام با پشتیبانی تماس بگیرید.",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+
+            if not user.is_active:
+                return CustomResponse.error(
+                    code="AUTH_002",
+                    detail="حساب کاربری شما غیرفعال شده است. با پشتیبانی تماس بگیرید.",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+            return CustomResponse.success(
+                data={
+                    "phone_number": user.phone_number,
+                    "exists": True,
+                },
+                message="شماره موبایل تایید شد.",
+            )
+
+        except Exception as e:
+            logger.exception(f"❌ Error in CheckPhoneView: {e}")
+            return CustomResponse.error(
+                code="GEN_001",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -286,9 +365,6 @@ class LoginView(GenericAPIView):
             )
 
 
-from rest_framework.views import APIView
-from rest_framework.permissions import AllowAny
-
 class LogoutView(APIView):
     permission_classes = [AllowAny]
 
@@ -296,12 +372,10 @@ class LogoutView(APIView):
         response = CustomResponse.success(
             message="خروج با موفقیت انجام شد."
         )
-
         clear_auth_cookies(response)
-
         return response
 
-    
+
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
 
@@ -344,7 +418,6 @@ class RefreshTokenView(APIView):
                 message="توکن با موفقیت به‌روزرسانی شد.",
             )
 
-            # ✅ ست کردن کوکی جدید
             set_auth_cookies(response, access_token, str(refresh))
             return response
 
@@ -355,6 +428,7 @@ class RefreshTokenView(APIView):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -362,19 +436,17 @@ class ProfileView(APIView):
         try:
             user = request.user
             cache_key = f"profile:user:{user.id}"
-            
-            # ✅ از کش
+
             cached = cache.get(cache_key)
             if cached is not None:
                 return CustomResponse.success(
                     data=cached,
                     message="اطلاعات پروفایل دریافت شد."
                 )
-            
-            # ✅ از DB
+
             data = UserSerializer(user).data
-            cache.set(cache_key, data, 300)  # ۵ دقیقه
-            
+            cache.set(cache_key, data, 300)
+
             return CustomResponse.success(
                 data=data,
                 message="اطلاعات پروفایل دریافت شد."
@@ -389,17 +461,15 @@ class ProfileView(APIView):
     def patch(self, request, *args, **kwargs):
         try:
             user = request.user
-            
+
             serializer = ProfileUpdateSerializer(
                 user,
                 data=request.data,
                 partial=True,
                 context={"request": request},
             )
-            
-            # ✅ اگه خطای اعتبارسنجی داشت
+
             if not serializer.is_valid():
-                # ✅ خطای یونیک بودن ایمیل
                 if "email" in serializer.errors:
                     return CustomResponse.error(
                         code="REG_002",
@@ -407,11 +477,8 @@ class ProfileView(APIView):
                         detail="این ایمیل قبلاً ثبت شده است.",
                         status_code=status.HTTP_400_BAD_REQUEST,
                     )
-                
-                # سایر خطاها
                 return CustomResponse.validation_errors(serializer.errors)
-            
-            # ✅ چک کن که کاربر واقعاً چیزی تغییر داده
+
             changed_fields = list(serializer.validated_data.keys())
             if not changed_fields:
                 return CustomResponse.error(
@@ -419,31 +486,26 @@ class ProfileView(APIView):
                     detail="هیچ تغییری اعمال نشد.",
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
-            
-            # ✅ اعمال تغییرات
+
             updated_user = serializer.save()
-            
-            # ✅ چک کن ایمیل تغییر کرده یا نه
             email_changed = "email" in changed_fields
-            
-            # ✅ پاک کردن کش
+
             cache.delete(f"profile:user:{user.id}")
             cache.delete(f"dashboard:user:{user.id}")
             cache.delete(f"auth:user:{user.id}")
-            
-            user_identifier = user.email if hasattr(user, "email") else str(user.id)
+
+            user_identifier = user.phone_number
             print(f"✅ پروفایل به‌روز شد: {user_identifier} - تغییرات: {', '.join(changed_fields)}")
-            
-            # ✅ پیام مناسب
+
             message = f"پروفایل با موفقیت به‌روزرسانی شد. ({len(changed_fields)} تغییر)"
             if email_changed:
                 message += " لطفاً ایمیل جدید خود را تایید کنید."
-            
+
             return CustomResponse.success(
                 data=UserSerializer(updated_user).data,
                 message=message,
             )
-        
+
         except Exception as e:
             print(f"🔥 خطای غیرمنتظره در ProfileView PATCH: {str(e)}")
             return CustomResponse.error(
@@ -451,4 +513,3 @@ class ProfileView(APIView):
                 detail=str(e) if settings.DEBUG else None,
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-

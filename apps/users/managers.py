@@ -1,33 +1,49 @@
 """
-Manager سفارشی برای User مبتنی بر ایمیل.
-
-Django به‌طور پیش‌فرض انتظار دارد User یک فیلد username داشته باشد. چون در
-این پروژه ایمیل به‌عنوان شناسه‌ی یکتای ورود استفاده می‌شود (رایج‌تر و
-کاربرپسندتر از username برای یک اپلیکیشن مالی)، باید متدهای create_user و
-create_superuser به‌صورت دستی بازنویسی شوند.
+Manager سفارشی برای User مبتنی بر شماره موبایل.
 """
+
+from __future__ import annotations
 
 from django.contrib.auth.base_user import BaseUserManager
 
+from .utils import normalize_phone_number
+
 
 class UserManager(BaseUserManager):
+    """
+    Manager سفارشی مدل User.
+
+    شناسه ورود:
+        phone_number
+
+    اطلاعات نام:
+        first_name
+        last_name
+    """
+
     def _create_user(
         self,
-        email: str,
+        phone_number: str,
         password: str | None,
-        first_name: str = "",
-        phone_number: str = "",
+        first_name: str,
+        last_name: str,
         **extra_fields,
     ):
-        if not email:
-            raise ValueError("Users must have an email address.")
+        if not phone_number:
+            raise ValueError("شماره موبایل الزامی است.")
 
-        email = self.normalize_email(email)
+        if not first_name:
+            raise ValueError("نام الزامی است.")
+
+        if not last_name:
+            raise ValueError("نام خانوادگی الزامی است.")
+
+        phone_number = normalize_phone_number(phone_number)
 
         user = self.model(
-            email=email,
-            first_name=first_name,
             phone_number=phone_number,
+            first_name=first_name.strip(),
+            last_name=last_name.strip(),
             **extra_fields,
         )
 
@@ -39,51 +55,56 @@ class UserManager(BaseUserManager):
 
     def create_user(
         self,
-        email: str,
+        phone_number: str,
         password: str | None = None,
         first_name: str = "",
-        phone_number: str = "",
+        last_name: str = "",
         **extra_fields,
     ):
+        """
+        ایجاد کاربر معمولی.
+        """
+
         extra_fields.setdefault("is_staff", False)
         extra_fields.setdefault("is_superuser", False)
         extra_fields.setdefault("is_active", True)
         extra_fields.setdefault("is_email_verified", False)
 
-        if not email:
-            raise ValueError("Users must have an email address.")
-
         return self._create_user(
-            email=email,
+            phone_number=phone_number,
             password=password,
             first_name=first_name,
-            phone_number=phone_number,
+            last_name=last_name,
             **extra_fields,
         )
 
     def create_superuser(
         self,
-        email: str,
+        phone_number: str,
         password: str | None = None,
         first_name: str = "",
-        phone_number: str = "",
+        last_name: str = "",
         **extra_fields,
     ):
+        """
+        ایجاد کاربر Superuser.
+        """
+
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
         extra_fields.setdefault("is_email_verified", True)
 
-        if not extra_fields.get("is_staff"):
+        if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True.")
 
-        if not extra_fields.get("is_superuser"):
+        if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True.")
 
         return self._create_user(
-            email=email,
+            phone_number=phone_number,
             password=password,
             first_name=first_name,
-            phone_number=phone_number,
+            last_name=last_name,
             **extra_fields,
         )
